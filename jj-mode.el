@@ -695,7 +695,8 @@ The results of this fn are fed into `jj--parse-log-entries'."
 (defun jj-diffedit-emacs ()
   "Emacs-based diffedit using built-in ediff."
   (interactive)
-  (let* ((section (magit-current-section))
+  (let* ((default-directory (jj--root))
+         (section (magit-current-section))
          (file (cond
                 ((and section (eq (oref section type) 'jj-file-section))
                  (oref section file))
