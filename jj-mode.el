@@ -89,6 +89,10 @@ The function must accept one argument: the buffer to display."
     map)
   "Keymap for `jj-mode'.")
 
+(defface jj--fake-face
+  '((t ()))
+  "Face that does nothing but tricks magit-sections into not using its face")
+
 ;;;###autoload
 (transient-define-prefix jj-mode-transient ()
   "JJ commands transient menu."
@@ -132,29 +136,38 @@ The function must accept one argument: the buffer to display."
 if(self.root(),
   format_root_commit(self),
   label(
-    separate('\x1e',
+    separate(' ',
       if(self.current_working_copy(), 'working_copy'),
       if(self.immutable(), 'immutable', 'mutable'),
       if(self.conflict(), 'conflicted'),
     ),
+    separate('\x1e',
+      '1',
+      format_short_change_id_with_hidden_and_divergent_info(self),
+      self.author().email().local(),
+      format_timestamp(self.committer().timestamp()),
+      concat(' ', separate(' ', self.bookmarks(), self.tags(), self.working_copies())),
+      if(self.git_head(), label('git_head', 'git_head()'), ' '),
+      format_short_commit_id(self.commit_id()),
+      if(self.conflict(), label('conflict', 'conflict'), ' '),
+      if(config('ui.show-cryptographic-signatures').as_boolean(),
+        format_short_cryptographic_signature(self.signature()), ' '),
+    ) ++ '\n\x1e' ++
     concat(
       separate('\x1e',
-        format_short_change_id_with_hidden_and_divergent_info(self),
-        format_short_signature_oneline(self.author()),
-        concat(' ', self.bookmarks(), self.tags(), self.working_copies()),
-        if(self.git_head(), label('git_head', 'git_head()'), ' '),
-        if(self.conflict(), label('conflict', 'conflict'), ' '),
-        if(config('ui.show-cryptographic-signatures').as_boolean(),
-          format_short_cryptographic_signature(self.signature()),
-          ' '),
+        '2',
         if(self.empty(), label('empty', '(empty)'), ' '),
         if(self.description(),
           self.description().first_line(),
           label(if(self.empty(), 'empty'), description_placeholder),
         ),
-        format_short_commit_id(self.commit_id()),
-        format_timestamp(commit_timestamp(self)),
-        if(self.description(), json(self.description()), json(' ')),
+        concat(' ',
+          if(self.diff().stat().total_added() > 0,
+            label('diff added', '+' ++ self.diff().stat().total_added())),
+          if(self.diff().stat().total_removed() > 0,
+            label('diff removed', '-' ++ self.diff().stat().total_removed()))),
+        self.description().escape_json(),
+        stringify(self.diff().stat()).escape_json(),
       ),
     ),
   )
@@ -403,12 +416,12 @@ When ALL-REMOTES is non-nil, include remote bookmarks formatted as NAME@REMOTE."
 
 (defclass jj-commits-section (magit-section) ())
 (defclass jj-status-section (magit-section) ())
-(defclass jj-diff-stat-section (magit-section) ())
 (defclass jj-log-graph-section (magit-section) ())
 (defclass jj-log-entry-section (magit-section)
   ((commit-id :initarg :commit-id)
    (description :initarg :description)
    (bookmarks :initarg :bookmarks)))
+(defclass jj-pseudo-section (magit-section) ())
 (defclass jj-diff-section (magit-section) ())
 (defclass jj-file-section (magit-section)
   ((file :initarg :file)))
@@ -423,56 +436,94 @@ When ALL-REMOTES is non-nil, include remote bookmarks formatted as NAME@REMOTE."
   "Get log line pairs from BUF (defaults to `current-buffer').
 
 This somewhat naively runs log, splits on newlines, and partitions the
-lines into pairs.
-
-Each pair SHOULD be (line-with-changeset-id-and-email description-line).
-
-The results of this fn are fed into `jj--parse-log-entries'."
+lines into records"
   (with-current-buffer (or buf (current-buffer))
-    (let ((log-output (jj--run-command-color "log" "-T" jj--log-template)))
+    (let ((log-output (jj--run-command-color "log" "-T" jj--log-template))
+          (elems1 nil)
+          (result nil))
       (when (and log-output (not (string-empty-p log-output)))
-        (let ((lines (split-string log-output "\n" t)))
-          (cl-loop for line in lines
-                   for elems = (mapcar #'string-trim (split-string line "\x1e" ))
-                   when (> (length elems) 1) collect
-                   (seq-let (prefix change-id author bookmarks git-head conflict signature empty short-desc commit-id timestamp long-desc) elems
-                     (list :id (seq-take change-id 8)
-                           :prefix prefix
-                           :line line
-                           :elems (seq-remove (lambda (l) (or (not l) (string-blank-p l))) elems)
-                           :author author
-                           :commit_id commit-id
-                           :short-desc short-desc
-                           :long-desc  (if long-desc (json-parse-string long-desc) nil)
-                           :timestamp  timestamp
-                           :bookmarks bookmarks ))
-                   else collect
-                   (list :elems (list line nil))))))))
+        (dolist (line (split-string log-output "\n" t))
+          (let* ((elems (mapcar #'string-trim (split-string line "\x1e" )))
+                 (rec-index (nth 1 elems))
+                 (elems (cons (car elems) (cddr elems)))) ;; cut out record index
+            (cond
+             ((string= rec-index "1")
+              (setq elems1 elems))
+             ((string= rec-index "2")
+
+              (seq-let (prefix1 change-id author timestamp bookmarks git-head commit-id conflict signature) elems1
+                (seq-let (prefix2 empty short-desc diff-stat long-desc long-diff-stat) elems
+                  (push
+                   (list :id (seq-take change-id 8)
+                         :prefix1 prefix1
+                         :elems1 (seq-remove (lambda (l) (or (not l) (string-blank-p l))) elems1)
+                         :prefix2 prefix2
+                         :elems2 (seq-remove (lambda (l) (or (not l) (string-blank-p l))) (butlast elems 2))
+                         :line line
+                         :author author
+                         :commit-id commit-id
+                         :short-desc short-desc
+                         :diff-stat diff-stat
+                         :long-desc (json-parse-string long-desc)
+                         :long-diff-stat (json-parse-string long-diff-stat)
+                         :timestamp timestamp
+                         :bookmarks bookmarks)
+                   result)
+                  (setq first-line nil))))
+             (t
+              (push (list :line line) result))))))
+      (reverse result))))
+
+(defun jj--indent-lines (lines column)
+  "Insert LINES into the current buffer, indenting each line to COLUMN."
+  (let ((indentation (make-string column ?\s))) ; Create a string of spaces for indentation
+    (mapconcat (lambda (line) (concat indentation line)) lines "\n")))
 
 (defun jj--indent-string (s column)
   "Insert STRING into the current buffer, indenting each line to COLUMN."
-  (let ((indentation (make-string column ?\s))) ; Create a string of spaces for indentation
-    (mapconcat (lambda (line)
-                 (concat indentation line))
-               (split-string s "\n")
-               "\n"))) ; Join lines with newline, prefixed by indentation
+  (jj--indent-lines (split-string s "\n") column))
+
+(defun jj--insert-log-entry (entry)
+  (magit-insert-section
+      section (jj-log-entry-section entry t)
+      (oset section commit-id (plist-get entry :id))
+      (oset section description (plist-get entry :description))
+      (oset section bookmarks (plist-get entry :bookmarks))
+      (magit-insert-heading
+        (concat
+         (string-join (plist-get entry :elems1) " ")
+         "\n"
+         (string-join (plist-get entry :elems2) " ")))
+      (let* ((long-desc (plist-get entry :long-desc))
+             ;; Cut off first line since it is past of section header already
+             (truncated-long-desc (cdr (split-string long-desc "\n")))
+             (long-diff-stat (plist-get entry :long-diff-stat))
+             (indent-column (+ 1 (length (plist-get entry :prefix2)))))
+        (magit-insert-section-body
+          (when truncated-long-desc
+            (insert (jj--indent-lines truncated-long-desc indent-column) "\n"))
+          (when long-diff-stat
+            (insert (jj--indent-string long-diff-stat indent-column) "\n"))))))
+
+(defun jj--insert-log-text (entry)
+  ;; Insert an inert "section" to avoid highlighting whole graph section
+  ;; with `magit-section-highlight' when point is somewhere between changes
+  (magit-insert-section (jj-pseudo-section)
+    (let ((line (plist-get entry :line)))
+      (unless (text-property-not-all 0 (length line) 'face nil line)
+        (setq line (propertize line 'face 'jj--fake-face)))
+      (magit-insert-heading line))))
 
 (defun jj-log-insert-logs ()
   "Insert jj log graph into current buffer."
-  (magit-insert-section (jj-log-graph-section)
-    (magit-insert-heading "Log Graph")
-    (dolist (entry (jj-parse-log-entries))
-      (magit-insert-section section (jj-log-entry-section entry t)
-                            (oset section commit-id (plist-get entry :id))
-                            (oset section description (plist-get entry :description))
-                            (oset section bookmarks (plist-get entry :bookmarks))
-                            (magit-insert-heading
-                              (insert (string-join (butlast (plist-get entry :elems)) " ")) "\n")
-                            (when-let* ((long-desc (plist-get entry :long-desc))
-                                        (long-desc (jj--indent-string long-desc (+ 10 (length (plist-get entry :prefix))))))
-                              (magit-insert-section-body
-                                (insert long-desc "\n")))))
-    (insert "\n")))
+  (magit-insert-section
+      log-graph-section (jj-log-graph-section)
+      (magit-insert-heading "Log Graph")
+      (dolist (entry (jj-parse-log-entries))
+        (if (plist-get entry :id)
+            (jj--insert-log-entry entry)
+          (jj--insert-log-text entry)))
+      (insert "\n")))
 
 (defun jj-log-insert-status ()
   "Insert jj status into current buffer."
@@ -485,7 +536,7 @@ The results of this fn are fed into `jj--parse-log-entries'."
 
 (defun jj-log-insert-diff ()
   "Insert jj diff with hunks into current buffer."
-  (let ((diff-output (jj--run-command-color "diff" "--git")))
+  (let ((diff-output (jj--run-command-color "diff" "--git" "--no-pager")))
     (when (and diff-output (not (string-empty-p diff-output)))
       (magit-insert-section (jj-diff-section)
         (magit-insert-heading "Working Copy Changes")
@@ -607,6 +658,7 @@ The results of this fn are fed into `jj--parse-log-entries'."
     (jj--with-progress "Refreshing log view"
                        (lambda ()
                          (let ((inhibit-read-only t)
+                               (default-directory (jj--root))
                                (pos (point)))
                            (erase-buffer)
                            (magit-insert-section (jjbuf)  ; Root section wrapper
@@ -695,8 +747,7 @@ The results of this fn are fed into `jj--parse-log-entries'."
 (defun jj-diffedit-emacs ()
   "Emacs-based diffedit using built-in ediff."
   (interactive)
-  (let* ((default-directory (jj--root))
-         (section (magit-current-section))
+  (let* ((section (magit-current-section))
          (file (cond
                 ((and section (eq (oref section type) 'jj-file-section))
                  (oref section file))
@@ -1541,7 +1592,7 @@ Tries `jj git remote list' first, then falls back to `git remote'."
         (let ((inhibit-read-only t))
           (erase-buffer)
           (if commit-id
-              (insert (jj--run-command-color "show" "-r" commit-id))
+              (insert (jj--run-command-color "show" "--no-pager" "-r" commit-id))
             (insert (jj--run-command-color "show")))
           (diff-mode)
           (ansi-color-apply-on-region (point-min) (point-max))
