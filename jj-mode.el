@@ -1178,7 +1178,8 @@ With prefix ALL, include remote bookmarks."
 (defun jj-tug ()
   "Run jj tug command."
   (interactive)
-  (let ((result (jj--run-command "tug")))
+  (let* ((rev (or (jj-get-changeset-at-point) "@"))
+         (result (jj--run-command "bookmark" "move" "--from" (format "heads(::%s & bookmarks())" rev) "--to" rev)))
     (jj-log-refresh)
     (message "Tug completed: %s" (string-trim result))))
 
