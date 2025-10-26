@@ -607,6 +607,7 @@ The results of this fn are fed into `jj--parse-log-entries'."
     (jj--with-progress "Refreshing log view"
                        (lambda ()
                          (let ((inhibit-read-only t)
+                               (default-directory (jj--root))
                                (pos (point)))
                            (erase-buffer)
                            (magit-insert-section (jjbuf)  ; Root section wrapper
