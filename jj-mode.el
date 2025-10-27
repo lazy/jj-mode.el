@@ -1475,11 +1475,9 @@ Tries `jj git remote list' first, then falls back to `git remote'."
          (commit-id jj--message-commit-id)
          (log-buffer jj--log-buffer)
          (window-config jj--window-config))
-    (if (string-empty-p final-message)
-        (message "Empty message, aborting")
       (kill-buffer)
       (set-window-configuration window-config)
-      (funcall finish-func final-message commit-id))))
+      (funcall finish-func final-message commit-id)))
 
 (defun jj--message-abort ()
   "Abort message editing."
