@@ -441,7 +441,7 @@ The results of this fn are fed into `jj--parse-log-entries'."
                            :line line
                            :elems (seq-remove (lambda (l) (or (not l) (string-blank-p l))) elems)
                            :author author
-                           :commit_id commit-id
+                           :commit-id commit-id
                            :short-desc short-desc
                            :long-desc  (if long-desc (json-parse-string long-desc) nil)
                            :timestamp  timestamp
