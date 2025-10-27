@@ -607,11 +607,13 @@ The results of this fn are fed into `jj--parse-log-entries'."
     (jj--with-progress "Refreshing log view"
                        (lambda ()
                          (let ((inhibit-read-only t)
-                               (pos (point)))
+                               (pos (point))
+                               (selected-changeset (jj-get-changeset-at-point)))
                            (erase-buffer)
                            (magit-insert-section (jjbuf)  ; Root section wrapper
                              (magit-run-section-hook 'jj-log-sections-hook))
-                           (goto-char pos)
+                           (or (and selected-changeset (jj-goto-commit selected-changeset t))
+                               (goto-char pos))
                            (jj--debug "Log refresh completed"))))))
 
 (defun jj-enter-dwim ()
@@ -1221,11 +1223,12 @@ With prefix ALL, include remote bookmarks."
 (defun jj-undo ()
   "Undo the last change."
   (interactive)
-  (let ((commit-id (jj-get-changeset-at-point)))
-    (jj--run-command "undo")
-    (jj-log-refresh)
-    (when commit-id
-      (jj-goto-commit commit-id))))
+  (let ((result (jj--run-command "undo")))
+    (when (jj--handle-command-result
+           (list "undo") result
+           "Undid last change"
+           "Undo failed")
+      (jj-log-refresh))))
 
 (defun jj-abandon ()
   "Abandon a changeset."
@@ -1333,15 +1336,17 @@ With prefix ARG, open the transient menu for advanced options."
       (goto-char (line-beginning-position))
     (message "Current changeset (@) not found")))
 
-(defun jj-goto-commit (commit-id)
-  "Jump to a specific COMMIT-ID in the log."
+(defun jj-goto-commit (commit-id &optional silent)
+  "Jump to a specific COMMIT-ID in the log. Returns truthy value on success."
   (interactive "sCommit ID: ")
   (let ((start-pos (point)))
     (goto-char (point-min))
     (if (re-search-forward (regexp-quote commit-id) nil t)
         (goto-char (line-beginning-position))
       (goto-char start-pos)
-      (message "Commit %s not found" commit-id))))
+      (unless silent
+        (message "Commit %s not found" commit-id))
+      nil)))
 
 (defun jj--get-git-remotes ()
   "Return a list of Git remote names for the current repository.
