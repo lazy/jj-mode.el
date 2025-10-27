@@ -598,7 +598,7 @@ The results of this fn are fed into `jj--parse-log-entries'."
           (magit-insert-section-body
             (magit-run-section-hook 'jj-log-sections-hook))
           (insert "\n"))
-        (goto-char (point-min))))))
+        (jj-goto-current)))))
 
 (defun jj-log-refresh (&optional _ignore-auto _noconfirm)
   "Refresh the jj log buffer."
