@@ -608,6 +608,7 @@ The results of this fn are fed into `jj--parse-log-entries'."
                        (lambda ()
                          (let ((inhibit-read-only t)
                                (pos (point))
+                               (default-directory (jj--root))
                                (selected-changeset (jj-get-changeset-at-point)))
                            (erase-buffer)
                            (magit-insert-section (jjbuf)  ; Root section wrapper
