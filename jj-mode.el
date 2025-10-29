@@ -47,6 +47,11 @@
   :type 'hook
   :group 'jj)
 
+(defcustom jj-log-show-diff-stat nil
+  "Show diff stat in log graph. (makes log graph slower)"
+  :type 'boolean
+  :group 'jj)
+
 (defcustom jj-log-display-function #'pop-to-buffer
   "Function called to display the jj log buffer.
 The function must accept one argument: the buffer to display."
@@ -55,6 +60,17 @@ The function must accept one argument: the buffer to display."
           (function-item pop-to-buffer)
           (function-item display-buffer)
           (function :tag "Custom function"))
+  :group 'jj)
+
+;; diff-added/diff-removed faces (default and magit) often set background which spoils jj graph view
+;; Instead define our own faces
+(defface jj-diff-stat-added
+  '((t :foreground "#227722"))
+  "Face for showing added line count"
+  :group 'jj)
+(defface jj-diff-stat-removed
+  '((t :foreground "#AF0000"))
+  "Face for showing removed line count"
   :group 'jj)
 
 (defvar jj-mode-map
@@ -131,8 +147,10 @@ The function must accept one argument: the buffer to display."
 (defvar-local jj--repo-root nil
   "Cached repository root for the current buffer.")
 
-(defconst jj--log-template
-  "'\x1e' ++
+(defun jj--format-log-template ()
+  "Dynamically constructs template for formatting log entries"
+  (concat
+   "'\x1e' ++
 if(self.root(),
   format_root_commit(self),
   label(
@@ -158,13 +176,14 @@ if(self.root(),
         ),
         format_short_commit_id(self.commit_id()),
         format_timestamp(commit_timestamp(self)),
-        if(self.description(), json(self.description()), json(' ')),
+        '{\"long-desc\":' ++ self.description().escape_json()"
+   (when jj-log-show-diff-stat " ++ ',\"diff-stat\":' ++ stringify(self.diff().stat(120)).escape_json()")
+   " ++ '}',
       ),
     ),
   )
 )
-"
-  "Template for formatting log entries.")
+"))
 
 (defun jj--root ()
   "Find root of the current repository."
@@ -424,6 +443,23 @@ When ALL-REMOTES is non-nil, include remote bookmarks formatted as NAME@REMOTE."
    (header :initarg :header)))
 
 
+(defun jj--format-short-diff-stat (diff-stat)
+  "Parses +added-deleted stat from full diff stat to improve short stat generation.
+
+Using self.diff().stat().total_added() and self.diff().stat().total_removed() directly
+in addition to full self.diff().stat() would slow down template about 3 times,
+because templating language does not support caching (yet) and diff will be
+calculated 3 times."
+  (when (and diff-stat
+             (string-match "\\([0-9]+\\) insertions?(\\+), \\([0-9]+\\) deletions?(-)$" diff-stat))
+    (let ((added (match-string 1 diff-stat))
+          (removed (match-string 2 diff-stat)))
+      (concat (propertize (format "+%s" added) 'font-lock-face 'jj-diff-stat-added)
+              (propertize (format "-%s" removed) 'font-lock-face 'jj-diff-stat-removed)))))
+
+(defun jj--optional-string-trim (str)
+  "Wrapper around `'string-trim` that passes-through nil values without error"
+  (and str (string-trim str)))
 
 (defun jj-parse-log-entries (&optional buf)
   "Get log line pairs from BUF (defaults to `current-buffer').
@@ -435,25 +471,33 @@ Each pair SHOULD be (line-with-changeset-id-and-email description-line).
 
 The results of this fn are fed into `jj--parse-log-entries'."
   (with-current-buffer (or buf (current-buffer))
-    (let ((log-output (jj--run-command-color "log" "-T" jj--log-template)))
+    (let ((log-output (jj--run-command-color "log" "-T" (jj--format-log-template))))
       (when (and log-output (not (string-empty-p log-output)))
         (let ((lines (split-string log-output "\n" t)))
           (cl-loop for line in lines
-                   for elems = (mapcar #'string-trim (split-string line "\x1e" ))
+                   for elems = (mapcar
+                                (lambda (s) (unless (string-blank-p s) (string-trim s)))
+                                (split-string line "\x1e" ))
                    when (> (length elems) 1) collect
-                   (seq-let (prefix change-id author bookmarks git-head conflict signature empty short-desc commit-id timestamp long-desc) elems
-                     (list :id (seq-take change-id 8)
-                           :prefix prefix
-                           :line line
-                           :elems (seq-remove (lambda (l) (or (not l) (string-blank-p l))) elems)
-                           :author author
-                           :commit-id commit-id
-                           :short-desc short-desc
-                           :long-desc  (if long-desc (json-parse-string long-desc) nil)
-                           :timestamp  timestamp
-                           :bookmarks bookmarks ))
+                   (let* ((metadata-json (car (last elems)))
+                          (metadata (json-parse-string metadata-json :object-type 'plist))
+                          (optional-diff-stat (plist-get metadata :diff-stat))
+                          (short-diff-stat (jj--format-short-diff-stat optional-diff-stat)))
+                     ;; Insert short-diff-stat after short-desc
+                     (seq-let (prefix change-id author bookmarks git-head conflict signature empty short-desc commit-id timestamp metadata-json) elems
+                       (list :id (seq-take change-id 8)
+                             :prefix prefix
+                             :line line
+                             :elems (remove nil (list prefix change-id author bookmarks git-head conflict signature empty short-desc short-diff-stat commit-id timestamp))
+                             :author author
+                             :commit-id commit-id
+                             :short-desc short-desc
+                             :long-desc (jj--optional-string-trim (plist-get metadata :long-desc))
+                             :diff-stat (jj--optional-string-trim optional-diff-stat)
+                             :timestamp  timestamp
+                             :bookmarks bookmarks)))
                    else collect
-                   (list :elems (list line nil))))))))
+                   (list :elems (list line))))))))
 
 (defun jj--indent-string (s column)
   "Insert STRING into the current buffer, indenting each line to COLUMN."
@@ -469,12 +513,15 @@ The results of this fn are fed into `jj--parse-log-entries'."
     (oset section description (plist-get entry :short-desc))
     (oset section bookmarks (plist-get entry :bookmarks))
     (magit-insert-heading
-      (string-join (butlast (plist-get entry :elems)) " "))
-    (when-let* ((long-desc (plist-get entry :long-desc))
-                (indent-column (+ 10 (length (plist-get entry :prefix))))
-                (long-desc (jj--indent-string long-desc indent-column)))
-      (magit-insert-section-body
-        (insert long-desc "\n")))))
+      (string-join (plist-get entry :elems) " "))
+    (magit-insert-section-body
+      (let ((indent-column (+ 10 (length (plist-get entry :prefix))))
+            (long-desc (plist-get entry :long-desc))
+            (diff-stat (plist-get entry :diff-stat)))
+        (when (not (string-empty-p long-desc))
+           (insert (jj--indent-string long-desc indent-column) "\n"))
+        (when (and diff-stat (not (string-empty-p diff-stat)))
+          (insert "\n" (jj--indent-string diff-stat indent-column) "\n"))))))
 
 (cl-defmethod magit-section-highlight ((section jj-log-graph-section))
   "No-op highlight method to disable highlighting for Log Graph section.")
@@ -486,7 +533,7 @@ The results of this fn are fed into `jj--parse-log-entries'."
     (dolist (entry (jj-parse-log-entries))
       (if (plist-get entry :id)
           (jj--log-insert-entry entry)
-        (insert (string-join (butlast (plist-get entry :elems)) " ") "\n")))))
+        (insert (string-join (plist-get entry :elems) " ") "\n")))))
 
 (defun jj-log-insert-status ()
   "Insert jj status into current buffer."
