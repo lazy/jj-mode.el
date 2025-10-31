@@ -43,6 +43,11 @@
   :type 'hook
   :group 'jj)
 
+(defcustom jj-log-show-diff-stat nil
+  "Show diff stat in log graph. (makes log graph slower)"
+  :type 'boolean
+  :group 'jj)
+
 (defcustom jj-log-display-function #'pop-to-buffer
   "Function called to display the jj log buffer.
 The function must accept one argument: the buffer to display."
@@ -51,6 +56,17 @@ The function must accept one argument: the buffer to display."
           (function-item pop-to-buffer)
           (function-item display-buffer)
           (function :tag "Custom function"))
+  :group 'jj)
+
+;; diff-added/diff-removed faces (default and magit) often set background which spoils jj graph view
+;; Instead define our own faces
+(defface jj-diff-stat-added
+  '((t :foreground "#227722"))
+  "Face for showing added line count"
+  :group 'jj)
+(defface jj-diff-stat-removed
+  '((t :foreground "#AF0000"))
+  "Face for showing removed line count"
   :group 'jj)
 
 (defvar jj-mode-map
@@ -70,6 +86,7 @@ The function must accept one argument: the buffer to display."
     (define-key map (kbd "e") 'jj-edit-changeset)
     (define-key map (kbd "u") 'jj-undo)
     (define-key map (kbd "N") 'jj-new)
+    (define-key map (kbd "I") 'jj-insert)
     (define-key map (kbd "s") 'jj-squash-transient)
     (define-key map (kbd "c") 'jj-commit)
     (define-key map (kbd "d") 'jj-describe)
@@ -99,6 +116,7 @@ The function must accept one argument: the buffer to display."
                  ("e" "Edit changeset" jj-edit-changeset)
                  ("u" "Undo last change" jj-undo)
                  ("N" "New changeset" jj-new)
+                 ("I" "Insert changeset --after" jj-insert)
                  ("a" "Abandon changeset" jj-abandon)
                  ("d" "Describe changeset" jj-describe)
                  ("s" "Squash changeset" jj-squash-transient)]
@@ -126,9 +144,15 @@ The function must accept one argument: the buffer to display."
 
 (defvar-local jj--repo-root nil
   "Cached repository root for the current buffer.")
+(defvar-local jj--log-query nil
+  "Query displayed by current jj-mode buffer. If nil, default query (revsets.log) is used")
+(defvar-local jj--expand-log-entries nil
+  "Controls whether log entry sections in graph should be expanded by default")
 
-(defconst jj--log-template
-  "'\x1e' ++
+(defun jj--format-log-template ()
+  "Dynamically constructs template for formatting log entries"
+  (concat
+   "'\x1e' ++
 if(self.root(),
   format_root_commit(self),
   label(
@@ -154,13 +178,14 @@ if(self.root(),
         ),
         format_short_commit_id(self.commit_id()),
         format_timestamp(commit_timestamp(self)),
-        if(self.description(), json(self.description()), json(' ')),
+        '{\"long-desc\":' ++ self.description().escape_json()"
+   (when jj-log-show-diff-stat " ++ ',\"diff-stat\":' ++ stringify(self.diff().stat(120)).escape_json()")
+   " ++ '}',
       ),
     ),
   )
 )
-"
-  "Template for formatting log entries.")
+"))
 
 (defun jj--root ()
   "Find root of the current repository."
@@ -188,7 +213,7 @@ if(self.root(),
         result exit-code)
     (jj--debug "Running command: %s %s" jj-executable (string-join safe-args " "))
     (with-temp-buffer
-      (setq exit-code (apply #'process-file jj-executable nil t nil safe-args))
+      (setq exit-code (apply #'process-file jj-executable nil t nil "--color=never" "--no-pager" safe-args))
       (setq result (buffer-string))
       (jj--debug "Command completed in %.3f seconds, exit code: %d"
                  (float-time (time-subtract (current-time) start-time))
@@ -199,16 +224,19 @@ if(self.root(),
 
 (defun jj--run-command-color (&rest args)
   "Run jj command with ARGS and return colorized output."
-  (jj--debug "Running color command: %s --color=always %s" jj-executable (string-join args " "))
   (let ((start-time (current-time))
+        (safe-args (seq-remove #'null (append args '("--quiet"))))
         result exit-code)
+    (jj--debug "Running color command: %s --color=always %s" jj-executable (string-join safe-args " "))
     (with-temp-buffer
       (let ((process-environment (cons "FORCE_COLOR=1" (cons "CLICOLOR_FORCE=1" process-environment))))
-        (setq exit-code (apply #'process-file jj-executable nil t nil "--color=always" args))
+        (setq exit-code (apply #'process-file jj-executable nil t nil "--color=always" safe-args))
         (setq result (ansi-color-apply (buffer-string)))
         (jj--debug "Color command completed in %.3f seconds, exit code: %d"
                    (float-time (time-subtract (current-time) start-time))
                    exit-code)
+        (when (and jj-show-command-output (not (string-empty-p result)))
+          (jj--debug "Command output: %s" (string-trim result)))
         result))))
 
 (defun jj--run-command-async (callback &rest args)
@@ -418,6 +446,19 @@ When ALL-REMOTES is non-nil, include remote bookmarks formatted as NAME@REMOTE."
    (header :initarg :header)))
 
 
+(defun jj--format-short-diff-stat (diff-stat)
+  "Parses +added-deleted stat from full diff stat to improve short stat generation.
+
+Using self.diff().stat().total_added() and self.diff().stat().total_removed() directly
+in addition to full self.diff().stat() would slow down template about 3 times,
+because templating language does not support caching (yet) and diff will be
+calculated 3 times."
+  (when (and diff-stat
+             (string-match "\\([0-9]+\\) insertions?(\\+), \\([0-9]+\\) deletions?(-)$" diff-stat))
+    (let ((added (match-string 1 diff-stat))
+          (removed (match-string 2 diff-stat)))
+      (concat (propertize (format "+%s" added) 'font-lock-face 'jj-diff-stat-added)
+              (propertize (format "-%s" removed) 'font-lock-face 'jj-diff-stat-removed)))))
 
 (defun jj-parse-log-entries (&optional buf)
   "Get log line pairs from BUF (defaults to `current-buffer').
@@ -429,25 +470,35 @@ Each pair SHOULD be (line-with-changeset-id-and-email description-line).
 
 The results of this fn are fed into `jj--parse-log-entries'."
   (with-current-buffer (or buf (current-buffer))
-    (let ((log-output (jj--run-command-color "log" "-T" jj--log-template)))
+    (let* ((args (append (list "log" "-T" (jj--format-log-template))
+                         (when jj--log-query (list "-r" jj--log-query))))
+           (log-output (apply #'jj--run-command-color args)))
       (when (and log-output (not (string-empty-p log-output)))
         (let ((lines (split-string log-output "\n" t)))
           (cl-loop for line in lines
-                   for elems = (mapcar #'string-trim (split-string line "\x1e" ))
+                   for elems = (mapcar
+                                (lambda (s) (unless (string-blank-p s) (string-trim s)))
+                                (split-string line "\x1e" ))
                    when (> (length elems) 1) collect
-                   (seq-let (prefix change-id author bookmarks git-head conflict signature empty short-desc commit-id timestamp long-desc) elems
-                     (list :id (seq-take change-id 8)
-                           :prefix prefix
-                           :line line
-                           :elems (seq-remove (lambda (l) (or (not l) (string-blank-p l))) elems)
-                           :author author
-                           :commit-id commit-id
-                           :short-desc short-desc
-                           :long-desc  (if long-desc (json-parse-string long-desc) nil)
-                           :timestamp  timestamp
-                           :bookmarks bookmarks ))
+                   (let* ((metadata-json (car (last elems)))
+                          (metadata (json-parse-string metadata-json :object-type 'plist))
+                          (optional-diff-stat (plist-get metadata :diff-stat))
+                          (short-diff-stat (jj--format-short-diff-stat optional-diff-stat)))
+                     ;; Insert short-diff-stat after short-desc
+                     (seq-let (prefix change-id author bookmarks git-head conflict signature empty short-desc commit-id timestamp metadata-json) elems
+                       (list :id (seq-take change-id 8)
+                             :prefix prefix
+                             :line line
+                             :elems (remove nil (list prefix change-id author bookmarks git-head conflict signature empty short-desc short-diff-stat commit-id timestamp))
+                             :author author
+                             :commit-id commit-id
+                             :short-desc short-desc
+                             :long-desc (plist-get metadata :long-desc)
+                             :diff-stat (plist-get metadata :diff-stat)
+                             :timestamp  timestamp
+                             :bookmarks bookmarks)))
                    else collect
-                   (list :elems (list line nil))))))))
+                   (list :elems (list line))))))))
 
 (defun jj--indent-string (s column)
   "Insert STRING into the current buffer, indenting each line to COLUMN."
@@ -457,22 +508,36 @@ The results of this fn are fed into `jj--parse-log-entries'."
                (split-string s "\n")
                "\n"))) ; Join lines with newline, prefixed by indentation
 
+(defun jj--log-insert-entry (entry)
+  (let ((hide (not jj--expand-log-entries)))
+    (magit-insert-section section (jj-log-entry-section entry hide)
+      (oset section commit-id (plist-get entry :id))
+      (oset section description (plist-get entry :short-desc))
+      (oset section bookmarks (plist-get entry :bookmarks))
+      (magit-insert-heading
+        (string-join (plist-get entry :elems) " "))
+      (magit-insert-section-body
+        (let ((indent-column (+ 10 (length (plist-get entry :prefix))))
+              (long-desc (plist-get entry :long-desc))
+              (diff-stat (plist-get entry :diff-stat)))
+          (when (not (string-empty-p long-desc))
+            (insert (jj--indent-string long-desc indent-column)))
+          (when (and diff-stat (not (string-empty-p diff-stat)))
+            (insert "\n" (jj--indent-string diff-stat indent-column))))))))
+
+(cl-defmethod magit-section-highlight ((section jj-log-graph-section))
+  "No-op highlight method to disable highlighting for Log Graph section.")
+
 (defun jj-log-insert-logs ()
   "Insert jj log graph into current buffer."
-  (magit-insert-section (jj-log-graph-section)
-    (magit-insert-heading "Log Graph")
+
+  (magit-insert-section section (jj-log-graph-section)
+    (magit-insert-heading (concat "Log Graph"
+                                  (when jj--log-query (format ": %s" jj--log-query))))
     (dolist (entry (jj-parse-log-entries))
-      (magit-insert-section section (jj-log-entry-section entry t)
-                            (oset section commit-id (plist-get entry :id))
-                            (oset section description (plist-get entry :description))
-                            (oset section bookmarks (plist-get entry :bookmarks))
-                            (magit-insert-heading
-                              (insert (string-join (butlast (plist-get entry :elems)) " ")) "\n")
-                            (when-let* ((long-desc (plist-get entry :long-desc))
-                                        (long-desc (jj--indent-string long-desc (+ 10 (length (plist-get entry :prefix))))))
-                              (magit-insert-section-body
-                                (insert long-desc "\n")))))
-    (insert "\n")))
+      (if (plist-get entry :id)
+          (jj--log-insert-entry entry)
+        (insert (string-join (plist-get entry :elems) " ") "\n")))))
 
 (defun jj-log-insert-status ()
   "Insert jj status into current buffer."
@@ -580,7 +645,7 @@ The results of this fn are fed into `jj--parse-log-entries'."
                                     (insert (propertize line 'face 'magit-diff-context) "\n"))))))))))
 
 ;;;###autoload
-(defun jj-log ()
+(cl-defun jj-log (&key query expand-entries)
   "Display jj log in a magit-style buffer."
   (interactive)
   (let* ((repo-root (jj--root))
@@ -593,6 +658,8 @@ The results of this fn are fed into `jj--parse-log-entries'."
         (erase-buffer)
         (jj-mode)
         (funcall jj-log-display-function buffer)
+        (setq-local jj--log-query query)
+        (setq-local jj--expand-log-entries expand-entries)
         (setq-local jj--repo-root repo-root)
         (magit-insert-section (jjbuf)  ; Root section wrapper
           (magit-insert-section-body
@@ -1120,7 +1187,7 @@ With prefix ALL, include remote bookmarks."
           (rev (read-string (format "Target revision (default %s): " at) nil nil at)))
      (list rev names)))
   (when names
-    (apply #'jj--run-command (append '("bookmark" "move" "-t" ) (list commit) names))
+    (apply #'jj--run-command (append '("bookmark" "move" "--allow-backwards" "-t" ) (list commit) names))
     (jj-log-refresh)
     (message "Moved bookmark(s) to %s: %s" commit (string-join names ", "))))
 
@@ -1178,7 +1245,8 @@ With prefix ALL, include remote bookmarks."
 (defun jj-tug ()
   "Run jj tug command."
   (interactive)
-  (let ((result (jj--run-command "tug")))
+  (let* ((rev (or (jj-get-changeset-at-point) "@"))
+         (result (jj--run-command "bookmark" "move" "--from" (format "heads(::%s & bookmarks())" rev) "--to" rev)))
     (jj-log-refresh)
     (message "Tug completed: %s" (string-trim result))))
 
@@ -1257,6 +1325,20 @@ With prefix ARG, open the transient menu for advanced options."
                  "Failed to create new changeset")
             (jj-log-refresh)
             (jj-goto-current)))))))
+
+(defun jj-insert (arg)
+  "Create a new changeset after selected. Effectively rebasing all children on top of it."
+  (interactive "P")
+    (let* ((base (jj-get-changeset-at-point)))
+      (if (not base)
+          (user-error "Can only run new on a change")
+        (let* ((args (list "new" "--after" base))
+               (result (apply #'jj--run-command args)))
+          (when (jj--handle-command-result args result
+                 "Created new changeset"
+                 "Failed to create new changeset")
+            (jj-log-refresh)
+            (jj-goto-current))))))
 
 ;; New transient menu
 ;;;###autoload
