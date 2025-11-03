@@ -90,6 +90,7 @@ The function must accept one argument: the buffer to display."
     (define-key map (kbd "e") 'jj-edit-changeset)
     (define-key map (kbd "u") 'jj-undo)
     (define-key map (kbd "N") 'jj-new)
+    (define-key map (kbd "I") 'jj-insert)
     (define-key map (kbd "s") 'jj-squash-transient)
     (define-key map (kbd "c") 'jj-commit)
     (define-key map (kbd "d") 'jj-describe)
@@ -119,6 +120,7 @@ The function must accept one argument: the buffer to display."
                  ("e" "Edit changeset" jj-edit-changeset)
                  ("u" "Undo last change" jj-undo)
                  ("N" "New changeset" jj-new)
+                 ("I" "Insert changeset --after" jj-insert)
                  ("a" "Abandon changeset" jj-abandon)
                  ("d" "Describe changeset" jj-describe)
                  ("s" "Squash changeset" jj-squash-transient)]
@@ -1337,6 +1339,22 @@ With prefix ARG, open the transient menu for advanced options."
                  "Failed to create new changeset")
             (jj-log-refresh)
             (jj-goto-current)))))))
+
+(defun jj-insert (arg)
+  "Create a new changeset after selected. Effectively rebasing all children on top of it."
+  (interactive "P")
+    (let* ((base (jj-get-changeset-at-point)))
+      (if (not base)
+          (user-error "Can only run new on a change")
+        (let* ((args (list "new" "--after" base))
+               (result (apply #'jj--run-command args)))
+          (when (jj--handle-command-result
+                 args
+                 result
+                 "Created new changeset"
+                 "Failed to create new changeset")
+            (jj-log-refresh)
+            (jj-goto-current))))))
 
 ;; New transient menu
 ;;;###autoload
