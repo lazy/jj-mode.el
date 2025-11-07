@@ -68,6 +68,10 @@ The function must accept one argument: the buffer to display."
   '((t :foreground "#AF0000"))
   "Face for showing removed line count"
   :group 'jj)
+(defface jj-working-copy-heading
+  '((t :inherit region :extend t))
+  "Face for showing current working copy in the log graph"
+  :group 'jj)
 
 (defvar jj-mode-map
   (let ((map (make-sparse-keymap)))
@@ -161,27 +165,25 @@ if(self.root(),
       if(self.immutable(), 'immutable', 'mutable'),
       if(self.conflict(), 'conflicted'),
     ),
-    concat(
-      separate('\x1e',
-        format_short_change_id_with_hidden_and_divergent_info(self),
-        format_short_signature_oneline(self.author()),
-        concat(' ', separate(' ', self.bookmarks(), self.tags(), self.working_copies())),
-        if(self.git_head(), label('git_head', 'git_head()'), ' '),
-        if(self.conflict(), label('conflict', 'conflict'), ' '),
-        if(config('ui.show-cryptographic-signatures').as_boolean(),
-          format_short_cryptographic_signature(self.signature()),
-          ' '),
-        if(self.empty(), label('empty', '(empty)'), ' '),
-        if(self.description(),
-          self.description().first_line(),
-          label(if(self.empty(), 'empty'), description_placeholder),
-        ),
-        format_short_commit_id(self.commit_id()),
-        format_timestamp(commit_timestamp(self)),
-        '{\"long-desc\":' ++ self.description().escape_json()"
+    separate('\x1e',
+      format_short_change_id_with_hidden_and_divergent_info(self),
+      format_short_signature_oneline(self.author()),
+      concat(' ', separate(' ', self.bookmarks(), self.tags(), self.working_copies())),
+      if(self.git_head(), label('git_head', 'git_head()'), ' '),
+      if(self.conflict(), label('conflict', 'conflict'), ' '),
+      if(config('ui.show-cryptographic-signatures').as_boolean(),
+        format_short_cryptographic_signature(self.signature()),
+        ' '),
+      if(self.empty(), label('empty', '(empty)'), ' '),
+      if(self.description(),
+        self.description().first_line(),
+        label(if(self.empty(), 'empty'), description_placeholder),
+      ),
+      format_short_commit_id(self.commit_id()),
+      format_timestamp(commit_timestamp(self)),
+      '{\"long-desc\":' ++ self.description().escape_json() ++ ',\"current-working-copy\":' ++ json(self.current_working_copy())"
    (when jj-log-show-diff-stat " ++ ',\"diff-stat\":' ++ stringify(self.diff().stat(120)).escape_json()")
    " ++ '}',
-      ),
     ),
   )
 )
@@ -495,6 +497,7 @@ The results of this fn are fed into `jj--parse-log-entries'."
                              :short-desc short-desc
                              :long-desc (plist-get metadata :long-desc)
                              :diff-stat (plist-get metadata :diff-stat)
+                             :current-working-copy (plist-get metadata :current-working-copy)
                              :timestamp  timestamp
                              :bookmarks bookmarks)))
                    else collect
@@ -509,13 +512,16 @@ The results of this fn are fed into `jj--parse-log-entries'."
                "\n"))) ; Join lines with newline, prefixed by indentation
 
 (defun jj--log-insert-entry (entry)
-  (let ((hide (not jj--expand-log-entries)))
+  (let ((hide (not jj--expand-log-entries))
+        (section-start (point)))
     (magit-insert-section section (jj-log-entry-section entry hide)
       (oset section commit-id (plist-get entry :id))
       (oset section description (plist-get entry :short-desc))
       (oset section bookmarks (plist-get entry :bookmarks))
       (magit-insert-heading
         (string-join (plist-get entry :elems) " "))
+      (when (eq (plist-get entry :current-working-copy) t)
+        (font-lock-append-text-property section-start (point) 'font-lock-face 'jj-working-copy-heading))
       (magit-insert-section-body
         (let ((indent-column (+ 10 (length (plist-get entry :prefix))))
               (long-desc (plist-get entry :long-desc))
@@ -1352,17 +1358,17 @@ With prefix ARG, open the transient menu for advanced options."
   :transient-suffix 'transient--do-exit
   :transient-non-suffix t
   [:description "JJ New"
-   :class transient-columns
-   ["Arguments"
-    ("-r" "Parent revision(s)" "--parent=")
-    ("-A" "Insert after" "--insert-after=")
-    ("-B" "Insert before" "--insert-before=")
-    ("-m" "Message" "--message=")
-    ("-n" "No edit" "--no-edit")]
-   ["Actions"
-    ("n" "Create new changeset" jj-new-execute
-     :transient nil)
-    ("q" "Quit" transient-quit-one)]])
+                :class transient-columns
+                ["Arguments"
+                 ("-r" "Parent revision(s)" "--parent=")
+                 ("-A" "Insert after" "--insert-after=")
+                 ("-B" "Insert before" "--insert-before=")
+                 ("-m" "Message" "--message=")
+                 ("-n" "No edit" "--no-edit")]
+                ["Actions"
+                 ("n" "Create new changeset" jj-new-execute
+                  :transient nil)
+                 ("q" "Quit" transient-quit-one)]])
 
 ;;;###autoload
 (defun jj-new-execute (&optional args)
@@ -1844,11 +1850,11 @@ Tries `jj git remote list' first, then falls back to `git remote'."
   :transient-suffix 'transient--do-exit
   :transient-non-suffix t
   [:description "JJ Git"
-   :class transient-columns
-   ["Sync"
-    ("p" "Push" jj-git-push-transient)
-    ("f" "Fetch" jj-git-fetch-transient)]
-   [("q" "Quit" transient-quit-one)]])
+                :class transient-columns
+                ["Sync"
+                 ("p" "Push" jj-git-push-transient)
+                 ("f" "Fetch" jj-git-fetch-transient)]
+                [("q" "Quit" transient-quit-one)]])
 
 ;; Push transient and command
 (transient-define-prefix jj-git-push-transient ()
