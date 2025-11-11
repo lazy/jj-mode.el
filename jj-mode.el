@@ -58,6 +58,13 @@ The function must accept one argument: the buffer to display."
           (function :tag "Custom function"))
   :group 'jj)
 
+(defface jj-graph-log-face
+  '((t :inherit 'fixed-pitch))
+  "Face to u")
+(defface jj-graph-log-prefix-face
+  '((t :inherit 'fixed-pitch))
+  "Face to use for rendering log graph"
+  :group 'jj)
 ;; diff-added/diff-removed faces (default and magit) often set background which spoils jj graph view
 ;; Instead define our own faces
 (defface jj-diff-stat-added
@@ -522,14 +529,17 @@ The results of this fn are fed into `jj--parse-log-entries'."
         (string-join (plist-get entry :elems) " "))
       (when (eq (plist-get entry :current-working-copy) t)
         (font-lock-append-text-property section-start (point) 'font-lock-face 'jj-working-copy-heading))
+
       (magit-insert-section-body
-        (let ((indent-column (+ 10 (length (plist-get entry :prefix))))
+        (let ((body-start (point))
+              (indent-column (+ 10 (length (plist-get entry :prefix))))
               (long-desc (plist-get entry :long-desc))
               (diff-stat (plist-get entry :diff-stat)))
           (when (not (string-empty-p long-desc))
             (insert (jj--indent-string long-desc indent-column)))
           (when (and diff-stat (not (string-empty-p diff-stat)))
-            (insert "\n" (jj--indent-string diff-stat indent-column))))))))
+            (insert "\n" (jj--indent-string diff-stat indent-column)))
+          (font-lock-append-text-property body-start (point) 'font-lock-face 'jj-graph-log-face))))))
 
 (cl-defmethod magit-section-highlight ((section jj-log-graph-section))
   "No-op highlight method to disable highlighting for Log Graph section.")
@@ -540,10 +550,12 @@ The results of this fn are fed into `jj--parse-log-entries'."
   (magit-insert-section section (jj-log-graph-section)
     (magit-insert-heading (concat "Log Graph"
                                   (when jj--log-query (format ": %s" jj--log-query))))
-    (dolist (entry (jj-parse-log-entries))
-      (if (plist-get entry :id)
-          (jj--log-insert-entry entry)
-        (insert (string-join (plist-get entry :elems) " ") "\n")))))
+    (let ((graph-start (point)))
+      (dolist (entry (jj-parse-log-entries))
+        (if (plist-get entry :id)
+            (jj--log-insert-entry entry)
+          (insert (string-join (plist-get entry :elems) " ") "\n")))
+      (font-lock-append-text-property graph-start (point) 'font-lock-face 'jj-graph-log-face))))
 
 (defun jj-log-insert-status ()
   "Insert jj status into current buffer."
