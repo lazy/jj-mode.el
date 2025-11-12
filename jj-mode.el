@@ -58,10 +58,10 @@ The function must accept one argument: the buffer to display."
           (function :tag "Custom function"))
   :group 'jj)
 
-(defface jj-graph-log-face
+(defface jj-log-graph-face
   '((t :inherit 'fixed-pitch))
   "Face to u")
-(defface jj-graph-log-prefix-face
+(defface jj-log-graph-prefix-face
   '((t :inherit 'fixed-pitch))
   "Face to use for rendering log graph"
   :group 'jj)
@@ -151,7 +151,9 @@ The function must accept one argument: the buffer to display."
   ;; Clear rebase selections when buffer is killed
   (add-hook 'kill-buffer-hook 'jj-rebase-clear-selections nil t)
   ;; Clear squash selections when buffer is killed
-  (add-hook 'kill-buffer-hook 'jj-squash-clear-selections nil t))
+  (add-hook 'kill-buffer-hook 'jj-squash-clear-selections nil t)
+  (add-function :before-until (local 'imenu-create-index-function)
+                (lambda () jj--imenu-index)))
 
 (defvar-local jj--repo-root nil
   "Cached repository root for the current buffer.")
@@ -496,7 +498,6 @@ The results of this fn are fed into `jj--parse-log-entries'."
                      ;; Insert short-diff-stat after short-desc
                      (seq-let (prefix change-id author bookmarks git-head conflict signature empty short-desc commit-id timestamp metadata-json) elems
                        (list :id (seq-take change-id 8)
-                             :prefix prefix
                              :line line
                              :elems (remove nil (list prefix change-id author bookmarks git-head conflict signature empty short-desc short-diff-stat commit-id timestamp))
                              :author author
@@ -518,35 +519,43 @@ The results of this fn are fed into `jj--parse-log-entries'."
                (split-string s "\n")
                "\n"))) ; Join lines with newline, prefixed by indentation
 
+(defvar-local jj--imenu-index nil
+  "Cached repository root for the current buffer.")
+
 (defun jj--log-insert-entry (entry)
-  (let ((hide (not jj--expand-log-entries))
-        (section-start (point)))
+  (let* ((hide (not jj--expand-log-entries))
+         (section-start (point))
+         (id (plist-get entry :id))
+         (elems (plist-get entry :elems))
+         (prefix (car elems))
+         (heading (cdr elems))
+         (formatted-heading (string-join heading " ")))
+    (push (cons id (list (cons formatted-heading section-start))) jj--imenu-index)
     (magit-insert-section section (jj-log-entry-section entry hide)
-      (oset section commit-id (plist-get entry :id))
+      (oset section commit-id id)
       (oset section description (plist-get entry :short-desc))
       (oset section bookmarks (plist-get entry :bookmarks))
-      (magit-insert-heading
-        (string-join (plist-get entry :elems) " "))
+      (magit-insert-heading (concat prefix " " formatted-heading))
+      (font-lock-append-text-property section-start (+ section-start (length prefix)) 'font-lock-face 'jj-log-graph-prefix-face)
       (when (eq (plist-get entry :current-working-copy) t)
         (font-lock-append-text-property section-start (point) 'font-lock-face 'jj-working-copy-heading))
-
       (magit-insert-section-body
         (let ((body-start (point))
-              (indent-column (+ 10 (length (plist-get entry :prefix))))
+              (indent-column (+ 10 (length prefix)))
               (long-desc (plist-get entry :long-desc))
               (diff-stat (plist-get entry :diff-stat)))
           (when (not (string-empty-p long-desc))
             (insert (jj--indent-string long-desc indent-column)))
           (when (and diff-stat (not (string-empty-p diff-stat)))
             (insert "\n" (jj--indent-string diff-stat indent-column)))
-          (font-lock-append-text-property body-start (point) 'font-lock-face 'jj-graph-log-face))))))
+          (font-lock-append-text-property body-start (point) 'font-lock-face 'jj-log-graph-face))))))
 
 (cl-defmethod magit-section-highlight ((section jj-log-graph-section))
   "No-op highlight method to disable highlighting for Log Graph section.")
 
 (defun jj-log-insert-logs ()
   "Insert jj log graph into current buffer."
-
+  (setq jj--imenu-index nil)
   (magit-insert-section section (jj-log-graph-section)
     (magit-insert-heading (concat "Log Graph"
                                   (when jj--log-query (format ": %s" jj--log-query))))
@@ -554,8 +563,11 @@ The results of this fn are fed into `jj--parse-log-entries'."
       (dolist (entry (jj-parse-log-entries))
         (if (plist-get entry :id)
             (jj--log-insert-entry entry)
-          (insert (string-join (plist-get entry :elems) " ") "\n")))
-      (font-lock-append-text-property graph-start (point) 'font-lock-face 'jj-graph-log-face))))
+          (let ((start (point)))
+            (insert (string-join (plist-get entry :elems) " ") "\n")
+            (font-lock-append-text-property start (point) 'font-lock-face 'jj-log-graph-prefix-face))))
+      (font-lock-append-text-property graph-start (point) 'font-lock-face 'jj-log-graph-face)))
+  (setq jj--imenu-index (reverse jj--imenu-index)))
 
 (defun jj-log-insert-status ()
   "Insert jj status into current buffer."
