@@ -414,7 +414,8 @@ When ALL-REMOTES is non-nil, include remote bookmarks formatted as NAME@REMOTE."
 (defclass jj-log-entry-section (magit-section)
   ((commit-id :initarg :commit-id)
    (description :initarg :description)
-   (bookmarks :initarg :bookmarks)))
+   (bookmarks :initarg :bookmarks)
+   (prefix :initarg :prefix)))
 (defclass jj-diff-section (magit-section) ())
 (defclass jj-file-section (magit-section)
   ((file :initarg :file)))
@@ -468,6 +469,7 @@ The results of this fn are fed into `jj--parse-log-entries'."
     (oset section commit-id (plist-get entry :id))
     (oset section description (plist-get entry :short-desc))
     (oset section bookmarks (plist-get entry :bookmarks))
+    (oset section prefix (plist-get entry :prefix))
     (magit-insert-heading
       (string-join (butlast (plist-get entry :elems)) " "))
     (when-let* ((long-desc (plist-get entry :long-desc))
@@ -863,6 +865,23 @@ The results of this fn are fed into `jj--parse-log-entries'."
 (defvar-local jj-squash-into-overlay nil
   "Overlay for highlighting the selected 'into' commit.")
 
+(defun jj--make-commit-overlay (section text face)
+  (let* ((section-start (oref section start))
+         (prefix (oref section prefix))
+         (child-pos (+ section-start (length prefix)))
+         (child (make-overlay child-pos child-pos))
+         (heading-end (or (oref section content) (oref section end)))
+         (overlay (make-overlay section-start heading-end)))
+    (overlay-put overlay 'jj--child child)
+    (overlay-put overlay 'face face)
+    (overlay-put child 'before-string (propertize text 'face `(:weight bold ,@face)))
+    overlay))
+
+(defun jj--delete-overlay (overlay)
+  (when-let ((child-overlay (overlay-get overlay 'jj--child)))
+    (delete-overlay child-overlay))
+  (delete-overlay overlay))
+
 ;;;###autoload
 (defun jj-squash-clear-selections ()
   "Clear all squash selections and overlays."
@@ -870,10 +889,10 @@ The results of this fn are fed into `jj--parse-log-entries'."
   (setq jj-squash-from nil
         jj-squash-into nil)
   (when jj-squash-from-overlay
-    (delete-overlay jj-squash-from-overlay)
+    (jj--delete-overlay jj-squash-from-overlay)
     (setq jj-squash-from-overlay nil))
   (when jj-squash-into-overlay
-    (delete-overlay jj-squash-into-overlay)
+    (jj--delete-overlay jj-squash-into-overlay)
     (setq jj-squash-into-overlay nil))
   (message "Cleared all squash selections"))
 
@@ -885,14 +904,14 @@ The results of this fn are fed into `jj--parse-log-entries'."
              (section (magit-current-section)))
     ;; Clear previous from overlay
     (when jj-squash-from-overlay
-      (delete-overlay jj-squash-from-overlay))
+      (jj--delete-overlay jj-squash-from-overlay))
     ;; Set new from
     (setq jj-squash-from commit-id)
     ;; Create overlay for visual indication
     (setq jj-squash-from-overlay
-          (make-overlay (oref section start) (oref section end)))
-    (overlay-put jj-squash-from-overlay 'face '(:background "dark orange" :foreground "white"))
-    (overlay-put jj-squash-from-overlay 'before-string "[FROM] ")
+          (jj--make-commit-overlay
+           section " [FROM] "
+           '(:background "dark orange" :foreground "white" :extend t)))
     (message "Set from: %s" commit-id)))
 
 ;;;###autoload
@@ -903,14 +922,14 @@ The results of this fn are fed into `jj--parse-log-entries'."
              (section (magit-current-section)))
     ;; Clear previous into overlay
     (when jj-squash-into-overlay
-      (delete-overlay jj-squash-into-overlay))
+      (jj--delete-overlay jj-squash-into-overlay))
     ;; Set new into
     (setq jj-squash-into commit-id)
     ;; Create overlay for visual indication
     (setq jj-squash-into-overlay
-          (make-overlay (oref section start) (oref section end)))
-    (overlay-put jj-squash-into-overlay 'face '(:background "dark cyan" :foreground "white"))
-    (overlay-put jj-squash-into-overlay 'before-string "[INTO] ")
+          (jj--make-commit-overlay
+           section " [INTO]"
+           '(:background "dark cyan" :foreground "white" :extend t)))
     (message "Set into: %s" commit-id)))
 
 ;;;###autoload
@@ -1642,10 +1661,10 @@ Tries `jj git remote list' first, then falls back to `git remote'."
   (setq jj-rebase-source nil
         jj-rebase-destinations nil)
   (when jj-rebase-source-overlay
-    (delete-overlay jj-rebase-source-overlay)
+    (jj--delete-overlay jj-rebase-source-overlay)
     (setq jj-rebase-source-overlay nil))
   (dolist (overlay jj-rebase-destination-overlays)
-    (delete-overlay overlay))
+    (jj--delete-overlay overlay))
   (setq jj-rebase-destination-overlays nil)
   (message "Cleared all rebase selections"))
 
@@ -1657,14 +1676,14 @@ Tries `jj git remote list' first, then falls back to `git remote'."
              (section (magit-current-section)))
     ;; Clear previous source overlay
     (when jj-rebase-source-overlay
-      (delete-overlay jj-rebase-source-overlay))
+      (jj--delete-overlay jj-rebase-source-overlay))
     ;; Set new source
     (setq jj-rebase-source commit-id)
     ;; Create overlay for visual indication
     (setq jj-rebase-source-overlay
-          (make-overlay (oref section start) (oref section end)))
-    (overlay-put jj-rebase-source-overlay 'face '(:background "dark green" :foreground "white"))
-    (overlay-put jj-rebase-source-overlay 'before-string "[SOURCE] ")
+          (jj--make-commit-overlay
+           section " [SOURCE]"
+           '(:background "dark green" :foreground "white" :extend t)))
     (message "Set source: %s" commit-id)))
 
 ;;;###autoload
@@ -1681,15 +1700,15 @@ Tries `jj git remote list' first, then falls back to `git remote'."
           (dolist (overlay jj-rebase-destination-overlays)
             (when (and (>= (overlay-start overlay) (oref section start))
                        (<= (overlay-end overlay) (oref section end)))
-              (delete-overlay overlay)
+              (jj--delete-overlay overlay)
               (setq jj-rebase-destination-overlays (remove overlay jj-rebase-destination-overlays))))
           (message "Removed destination: %s" commit-id))
       ;; Add to destinations
       (push commit-id jj-rebase-destinations)
       ;; Create overlay for visual indication
-      (let ((overlay (make-overlay (oref section start) (oref section end))))
-        (overlay-put overlay 'face '(:background "dark blue" :foreground "white"))
-        (overlay-put overlay 'before-string "[DEST] ")
+      (let ((overlay (jj--make-commit-overlay
+                      section " [DEST]"
+                      '(:background "dark blue" :foreground "white" :extend t))))
         (push overlay jj-rebase-destination-overlays)
         (message "Added destination: %s" commit-id)))))
 
