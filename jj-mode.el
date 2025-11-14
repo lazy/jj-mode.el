@@ -512,13 +512,43 @@ The results of this fn are fed into `jj--parse-log-entries'."
                    else collect
                    (list :elems (list line))))))))
 
-(defun jj--indent-string (s column)
-  "Insert STRING into the current buffer, indenting each line to COLUMN."
-  (let ((indentation (make-string column ?\s))) ; Create a string of spaces for indentation
-    (mapconcat (lambda (line)
-                 (concat indentation line))
-               (split-string s "\n")
-               "\n"))) ; Join lines with newline, prefixed by indentation
+(defun jj--compute-body-line-prefix (section)
+  "Computes line prefix for long commit description. It indents it to be right after commit id. It also works with proportional fonts"
+  (save-excursion
+    (let* ((start (oref section start))
+           (prefix (oref section prefix))
+           (prefix-end (+ start (length prefix)))
+           (window (selected-window))
+           (space-width (car (window-text-pixel-size
+                              window prefix-end (+ prefix-end 3))))
+           (spacer (propertize " "
+                               'display `(space :width (,space-width))
+                               'face 'jj-log-graph-face))
+           (body-prefix (replace-regexp-in-string "\\S-" "│" prefix))
+           (body-prefix (propertize body-prefix
+                                    'face '(jj-log-graph-prefix-face)))
+           (body-prefix (concat body-prefix spacer)))
+      body-prefix)))
+
+
+(defun jj--magit-section-show (section &optional end)
+  (when (eq (oref section type) 'jj-log-entry-section)
+    (let ((body-prefix (jj--compute-body-line-prefix section))
+          (start (oref section content))
+          (end (or end (oref section end)))
+          (inhibit-read-only t))
+      (put-text-property start end 'line-prefix body-prefix)
+      (put-text-property start end 'wrap-prefix body-prefix))))
+(defun jj--magit-section-hide (section)
+  (when (eq (oref section type) 'jj-log-entry-section)
+    (let ((start (oref section content))
+          (end (oref section end))
+          (inhibit-read-only t))
+      (remove-text-properties start end '(line-prefix wrap-prefix)))))
+
+(advice-add 'magit-section-show :after 'jj--magit-section-show)
+(advice-add 'magit-section-hide :after 'jj--magit-section-hide)
+
 
 (defvar-local jj--imenu-index nil
   "Cached repository root for the current buffer.")
@@ -538,19 +568,23 @@ The results of this fn are fed into `jj--parse-log-entries'."
       (oset section bookmarks (plist-get entry :bookmarks))
       (oset section prefix prefix)
       (magit-insert-heading (concat prefix " " formatted-heading))
-      (font-lock-append-text-property section-start (+ section-start (length prefix)) 'font-lock-face 'jj-log-graph-prefix-face)
+      (let ((prefix-and-commit-id-end (+ section-start (length prefix) 10)))
+        (font-lock-append-text-property section-start prefix-and-commit-id-end
+                                        'font-lock-face 'jj-log-graph-prefix-face))
       (when (eq (plist-get entry :current-working-copy) t)
         (font-lock-append-text-property section-start (point) 'font-lock-face 'jj-working-copy-heading))
       (magit-insert-section-body
         (let ((body-start (point))
-              (indent-column (+ 10 (length prefix)))
               (long-desc (plist-get entry :long-desc))
               (diff-stat (plist-get entry :diff-stat)))
           (when (not (string-empty-p long-desc))
-            (insert (jj--indent-string long-desc indent-column)))
+            (insert long-desc))
           (when (and diff-stat (not (string-empty-p diff-stat)))
-            (insert "\n" (jj--indent-string diff-stat indent-column)))
-          (font-lock-append-text-property body-start (point) 'font-lock-face 'jj-log-graph-face))))))
+            (insert "\n" diff-stat))
+          (font-lock-append-text-property
+           (+ section-start (length prefix)) (point)
+           'font-lock-face 'jj-log-graph-face)
+          (jj--magit-section-show section (point)))))))
 
 (cl-defmethod magit-section-highlight ((section jj-log-graph-section))
   "No-op highlight method to disable highlighting for Log Graph section.")
