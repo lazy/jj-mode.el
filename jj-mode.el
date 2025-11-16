@@ -136,7 +136,7 @@ The function must accept one argument: the buffer to display."
 if(self.root(),
   format_root_commit(self),
   label(
-    separate('\x1e',
+    separate(' ',
       if(self.current_working_copy(), 'working_copy'),
       if(self.immutable(), 'immutable', 'mutable'),
       if(self.conflict(), 'conflicted'),
@@ -145,7 +145,7 @@ if(self.root(),
       separate('\x1e',
         format_short_change_id_with_hidden_and_divergent_info(self),
         format_short_signature_oneline(self.author()),
-        concat(' ', self.bookmarks(), self.tags(), self.working_copies()),
+        concat(' ', separate(' ', self.bookmarks(), self.tags(), self.working_copies())),
         if(self.git_head(), label('git_head', 'git_head()'), ' '),
         if(self.conflict(), label('conflict', 'conflict'), ' '),
         if(config('ui.show-cryptographic-signatures').as_boolean(),
@@ -192,7 +192,7 @@ if(self.root(),
         result exit-code)
     (jj--debug "Running command: %s %s" jj-executable (string-join safe-args " "))
     (with-temp-buffer
-      (setq exit-code (apply #'process-file jj-executable nil t nil safe-args))
+      (setq exit-code (apply #'process-file jj-executable nil t nil "--color=never" "--no-pager" safe-args))
       (setq result (buffer-string))
       (jj--debug "Command completed in %.3f seconds, exit code: %d"
                  (float-time (time-subtract (current-time) start-time))
@@ -213,6 +213,8 @@ if(self.root(),
         (jj--debug "Color command completed in %.3f seconds, exit code: %d"
                    (float-time (time-subtract (current-time) start-time))
                    exit-code)
+        (when (and jj-show-command-output (not (string-empty-p result)))
+          (jj--debug "Command output: %s" (string-trim result)))
         result))))
 
 (defun jj--run-command-async (callback &rest args)
@@ -445,7 +447,7 @@ The results of this fn are fed into `jj--parse-log-entries'."
                            :line line
                            :elems (seq-remove (lambda (l) (or (not l) (string-blank-p l))) elems)
                            :author author
-                           :commit_id commit-id
+                           :commit-id commit-id
                            :short-desc short-desc
                            :long-desc  (if long-desc (json-parse-string long-desc) nil)
                            :timestamp  timestamp
@@ -461,22 +463,30 @@ The results of this fn are fed into `jj--parse-log-entries'."
                (split-string s "\n")
                "\n"))) ; Join lines with newline, prefixed by indentation
 
+(defun jj--log-insert-entry (entry)
+  (magit-insert-section section (jj-log-entry-section entry t)
+    (oset section commit-id (plist-get entry :id))
+    (oset section description (plist-get entry :short-desc))
+    (oset section bookmarks (plist-get entry :bookmarks))
+    (magit-insert-heading
+      (string-join (butlast (plist-get entry :elems)) " "))
+    (when-let* ((long-desc (plist-get entry :long-desc))
+                (indent-column (+ 10 (length (plist-get entry :prefix))))
+                (long-desc (jj--indent-string long-desc indent-column)))
+      (magit-insert-section-body
+        (insert long-desc "\n")))))
+
+(cl-defmethod magit-section-highlight ((section jj-log-graph-section))
+  "No-op highlight method to disable highlighting for Log Graph section.")
+
 (defun jj-log-insert-logs ()
   "Insert jj log graph into current buffer."
-  (magit-insert-section (jj-log-graph-section)
+  (magit-insert-section section (jj-log-graph-section)
     (magit-insert-heading "Log Graph")
     (dolist (entry (jj-parse-log-entries))
-      (magit-insert-section section (jj-log-entry-section entry t)
-                            (oset section commit-id (plist-get entry :id))
-                            (oset section description (plist-get entry :description))
-                            (oset section bookmarks (plist-get entry :bookmarks))
-                            (magit-insert-heading
-                              (insert (string-join (butlast (plist-get entry :elems)) " ")) "\n")
-                            (when-let* ((long-desc (plist-get entry :long-desc))
-                                        (long-desc (jj--indent-string long-desc (+ 10 (length (plist-get entry :prefix))))))
-                              (magit-insert-section-body
-                                (insert long-desc "\n")))))
-    (insert "\n")))
+      (if (plist-get entry :id)
+          (jj--log-insert-entry entry)
+        (insert (string-join (butlast (plist-get entry :elems)) " ") "\n")))))
 
 (defun jj-log-insert-status ()
   "Insert jj status into current buffer."
@@ -602,7 +612,7 @@ The results of this fn are fed into `jj--parse-log-entries'."
           (magit-insert-section-body
             (magit-run-section-hook 'jj-log-sections-hook))
           (insert "\n"))
-        (goto-char (point-min))))))
+        (jj-goto-current)))))
 
 (defun jj-log-refresh (&optional _ignore-auto _noconfirm)
   "Refresh the jj log buffer."
@@ -611,11 +621,14 @@ The results of this fn are fed into `jj--parse-log-entries'."
     (jj--with-progress "Refreshing log view"
                        (lambda ()
                          (let ((inhibit-read-only t)
-                               (pos (point)))
+                               (pos (point))
+                               (default-directory (jj--root))
+                               (selected-changeset (jj-get-changeset-at-point)))
                            (erase-buffer)
                            (magit-insert-section (jjbuf)  ; Root section wrapper
                              (magit-run-section-hook 'jj-log-sections-hook))
-                           (goto-char pos)
+                           (or (and selected-changeset (jj-goto-commit selected-changeset t))
+                               (goto-char pos))
                            (jj--debug "Log refresh completed"))))))
 
 (defun jj-enter-dwim ()
@@ -699,7 +712,8 @@ The results of this fn are fed into `jj--parse-log-entries'."
 (defun jj-diffedit-emacs ()
   "Emacs-based diffedit using built-in ediff."
   (interactive)
-  (let* ((section (magit-current-section))
+  (let* ((default-directory (jj--root))
+         (section (magit-current-section))
          (file (cond
                 ((and section (eq (oref section type) 'jj-file-section))
                  (oref section file))
@@ -1224,11 +1238,12 @@ With prefix ALL, include remote bookmarks."
 (defun jj-undo ()
   "Undo the last change."
   (interactive)
-  (let ((commit-id (jj-get-changeset-at-point)))
-    (jj--run-command "undo")
-    (jj-log-refresh)
-    (when commit-id
-      (jj-goto-commit commit-id))))
+  (let ((result (jj--run-command "undo")))
+    (when (jj--handle-command-result
+           (list "undo") result
+           "Undid last change"
+           "Undo failed")
+      (jj-log-refresh))))
 
 (defun jj-abandon ()
   "Abandon a changeset."
@@ -1336,15 +1351,17 @@ With prefix ARG, open the transient menu for advanced options."
       (goto-char (line-beginning-position))
     (message "Current changeset (@) not found")))
 
-(defun jj-goto-commit (commit-id)
-  "Jump to a specific COMMIT-ID in the log."
+(defun jj-goto-commit (commit-id &optional silent)
+  "Jump to a specific COMMIT-ID in the log. Returns truthy value on success."
   (interactive "sCommit ID: ")
   (let ((start-pos (point)))
     (goto-char (point-min))
     (if (re-search-forward (regexp-quote commit-id) nil t)
         (goto-char (line-beginning-position))
       (goto-char start-pos)
-      (message "Commit %s not found" commit-id))))
+      (unless silent
+        (message "Commit %s not found" commit-id))
+      nil)))
 
 (defun jj--get-git-remotes ()
   "Return a list of Git remote names for the current repository.
