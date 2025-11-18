@@ -1294,10 +1294,10 @@ ARGS can be transient related infix, for example
   "Internal transient for jj bookmark operations."
   :transient-suffix 'transient--do-exit
   :transient-non-suffix t
-   ["Arguments"
-    ("-c" "Use commit id" "--use-commit-id")
-    ("-B" "Allow backwards" "--allow-backwards")]
-  ["Bookmark Operations"  
+  ["Arguments"
+   ("-c" "Use commit id" "--use-commit-id")
+   ("-B" "Allow backwards" "--allow-backwards")]
+  ["Bookmark Operations"
    [
     ("l" "List bookmarks" jj-bookmark-list
      :description "Show bookmark list" :transient nil)
@@ -1377,12 +1377,17 @@ With prefix ARG, open the transient menu for advanced options."
    :class transient-columns
    ["Arguments"
     ("-r" "Parent revision(s)" "--parent=")
-    ("-A" "Insert after" "--insert-after=")
-    ("-B" "Insert before" "--insert-before=")
+    ("-b" "Bookmark (or change id)" "--bookmark="
+     :choices (lambda ()
+                (jj--get-bookmark-names t)))
     ("-m" "Message" "--message=")
     ("-n" "No edit" "--no-edit")]
    ["Actions"
-    ("n" "Create new changeset" jj-new-execute
+    ("n" "Create new changeset" jj-new-after
+     :transient nil)
+    ("a" "Create after changeset" jj-new-after
+     :transient nil)
+    ("b" "Create before changeset" jj-new-before
      :transient nil)
     ("q" "Quit" transient-quit-one)]])
 
@@ -1432,6 +1437,34 @@ With prefix ARG, open the transient menu for advanced options."
              "Failed to create new changeset")
         (jj-log-refresh)
         (jj-goto-current)))))
+
+;;;###autoload
+(defun jj-new-after (&optional args)
+  "Create a new changeset after an existing one.
+
+Optionally takes a list like (\"--bookmark=bookmark-or-changeid-to-use\")
+indicating where to create the new changeset.
+
+Designed to receive ARGS from transient."
+  (interactive (list (transient-args 'jj-new-transient--internal)))
+  (let ((revset (or (transient-arg-value "--bookmark=" args)
+                    (jj-get-changeset-at-point)
+                    (completing-read "Change id: " (jj--get-bookmark-names t)))))
+    (jj-new-execute (cons (format "--insert-after=%s" revset) args))))
+
+;;;###autoload
+(defun jj-new-before (&optional args)
+  "Create a new changeset before an existing one.
+
+Optionally takes a list like (\"--bookmark=bookmark-or-changeid-to-use\")
+indicating where to create the new changeset.
+
+Designed to receive ARGS from transient."
+  (interactive (list (transient-args 'jj-new-transient--internal)))
+  (let ((revset (or (transient-arg-value "--bookmark=" args)
+                    (jj-get-changeset-at-point)
+                    (completing-read "Change id: " (jj--get-bookmark-names t)))))
+    (jj-new-execute (cons (format "--insert-before=%s" revset) args))))
 
 (defun jj-goto-current ()
   "Jump to the current changeset (@)."
