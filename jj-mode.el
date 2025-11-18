@@ -146,6 +146,10 @@ The function must accept one argument: the buffer to display."
 
 (defvar-local jj--repo-root nil
   "Cached repository root for the current buffer.")
+(defvar-local jj--log-revset nil
+  "Revset displayed by current jj-mode buffer. If nil, default revset (revsets.log) is used")
+(defvar-local jj--expand-log-entries nil
+  "Controls whether log entry sections in graph should be expanded by default")
 
 (defun jj--format-log-template ()
   "Dynamically constructs template for formatting log entries"
@@ -473,7 +477,9 @@ Each pair SHOULD be (line-with-changeset-id-and-email description-line).
 
 The results of this fn are fed into `jj--parse-log-entries'."
   (with-current-buffer (or buf (current-buffer))
-    (let ((log-output (jj--run-command-color "log" "-T" (jj--format-log-template))))
+    (let* ((args (append (list "log" "-T" (jj--format-log-template))
+                         (when jj--log-revset (list "-r" jj--log-revset))))
+           (log-output (apply #'jj--run-command-color args)))
       (when (and log-output (not (string-empty-p log-output)))
         (let ((lines (split-string log-output "\n" t)))
           (cl-loop for line in lines
@@ -510,29 +516,32 @@ The results of this fn are fed into `jj--parse-log-entries'."
                "\n"))) ; Join lines with newline, prefixed by indentation
 
 (defun jj--log-insert-entry (entry)
-  (magit-insert-section section (jj-log-entry-section entry t)
-    (oset section commit-id (plist-get entry :id))
-    (oset section description (plist-get entry :short-desc))
-    (oset section bookmarks (plist-get entry :bookmarks))
-    (oset section prefix (plist-get entry :prefix))
-    (magit-insert-heading
-      (string-join (plist-get entry :elems) " "))
-    (magit-insert-section-body
-      (let ((indent-column (+ 10 (length (plist-get entry :prefix))))
-            (long-desc (plist-get entry :long-desc))
-            (diff-stat (plist-get entry :diff-stat)))
-        (when (not (string-empty-p long-desc))
-           (insert (jj--indent-string long-desc indent-column) "\n"))
-        (when (and diff-stat (not (string-empty-p diff-stat)))
-          (insert "\n" (jj--indent-string diff-stat indent-column) "\n"))))))
+  (let ((hide (not jj--expand-log-entries)))
+    (magit-insert-section section (jj-log-entry-section entry hide)
+      (oset section commit-id (plist-get entry :id))
+      (oset section description (plist-get entry :short-desc))
+      (oset section bookmarks (plist-get entry :bookmarks))
+      (oset section prefix (plist-get entry :prefix))
+      (magit-insert-heading
+        (string-join (plist-get entry :elems) " "))
+      (magit-insert-section-body
+        (let ((indent-column (+ 10 (length (plist-get entry :prefix))))
+              (long-desc (plist-get entry :long-desc))
+              (diff-stat (plist-get entry :diff-stat)))
+          (when (not (string-empty-p long-desc))
+            (insert (jj--indent-string long-desc indent-column) "\n"))
+          (when (and diff-stat (not (string-empty-p diff-stat)))
+            (insert "\n" (jj--indent-string diff-stat indent-column) "\n")))))))
 
 (cl-defmethod magit-section-highlight ((section jj-log-graph-section))
   "No-op highlight method to disable highlighting for Log Graph section.")
 
 (defun jj-log-insert-logs ()
   "Insert jj log graph into current buffer."
+
   (magit-insert-section section (jj-log-graph-section)
-    (magit-insert-heading "Log Graph")
+    (magit-insert-heading (concat "Log Graph"
+                                  (when jj--log-revset (format ": %s" jj--log-revset))))
     (dolist (entry (jj-parse-log-entries))
       (if (plist-get entry :id)
           (jj--log-insert-entry entry)
@@ -644,7 +653,7 @@ The results of this fn are fed into `jj--parse-log-entries'."
                                     (insert (propertize line 'face 'magit-diff-context) "\n"))))))))))
 
 ;;;###autoload
-(defun jj-log ()
+(cl-defun jj-log (&key revset expand-entries)
   "Display jj log in a magit-style buffer."
   (interactive)
   (let* ((repo-root (jj--root))
@@ -657,6 +666,8 @@ The results of this fn are fed into `jj--parse-log-entries'."
         (erase-buffer)
         (jj-mode)
         (funcall jj-log-display-function buffer)
+        (setq-local jj--log-revset revset)
+        (setq-local jj--expand-log-entries expand-entries)
         (setq-local jj--repo-root repo-root)
         (magit-insert-section (jjbuf)  ; Root section wrapper
           (magit-insert-section-body
