@@ -222,12 +222,13 @@ if(self.root(),
 
 (defun jj--run-command-color (&rest args)
   "Run jj command with ARGS and return colorized output."
-  (jj--debug "Running color command: %s --color=always %s" jj-executable (string-join args " "))
   (let ((start-time (current-time))
+        (safe-args (seq-remove #'null (append args '("--quiet"))))
         result exit-code)
+    (jj--debug "Running color command: %s --color=always %s" jj-executable (string-join safe-args " "))
     (with-temp-buffer
       (let ((process-environment (cons "FORCE_COLOR=1" (cons "CLICOLOR_FORCE=1" process-environment))))
-        (setq exit-code (apply #'process-file jj-executable nil t nil "--color=always" args))
+        (setq exit-code (apply #'process-file jj-executable nil t nil "--color=always" safe-args))
         (setq result (ansi-color-apply (buffer-string)))
         (jj--debug "Color command completed in %.3f seconds, exit code: %d"
                    (float-time (time-subtract (current-time) start-time))
