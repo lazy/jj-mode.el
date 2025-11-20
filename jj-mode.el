@@ -1238,17 +1238,21 @@ With prefix ALL, include remote bookmarks."
           (jj-log-refresh))))))
 
 ;;;###autoload
-(defun jj-bookmark-set (name commit &optional use-commit-id allow-backwards)
-  "Create or update bookmark NAME to point to COMMIT."
+(defun jj-bookmark-set (name commit &optional args)
+  "Create or update bookmark NAME to point to COMMIT.
+ARGS can be transient related infix, for example
+ --allow-backwards."
   (interactive
    (let* ((existing (jj--get-bookmark-names))
           (name (completing-read "Set bookmark: " existing nil nil))
           (at (or (jj-get-changeset-at-point (transient-args 'jj-bookmark-transient--internal)) "@"))
           (rev (read-string (format "Target revision (default %s): " at) nil nil at)))
-     (append (list name rev) (transient-args 'jj-bookmark-transient--internal))))
-  (let ((default-directory (jj--root)))
-    (let ((result (jj--run-command "bookmark" "set" name "-r" commit (when allow-backwards "--allow-backwards"))))
-      (when (jj--handle-command-result (list "bookmark" "set" name "-r" commit) result
+     (append (list name rev) (list (transient-args 'jj-bookmark-transient--internal)))))
+  (let* ((default-directory (jj--root))
+        (allow-backwards (when (transient-arg-value "--allow-backwards" args) "--allow-backwards"))
+        (cmd-args (list "bookmark" "set" name "-r" commit allow-backwards)))
+    (let ((result (apply #'jj--run-command cmd-args)))
+      (when (jj--handle-command-result cmd-args result
                                        (format "Set bookmark '%s' to %s" name commit)
                                        "Failed to set bookmark")
         (jj-log-refresh)))))
@@ -1338,7 +1342,7 @@ With prefix ALL, include remote bookmarks."
       (progn
         (jj--run-command "abandon" "-r" change-id)
         (jj-log-refresh))
-    (message "Can only run new on a change")))
+    (message "Can only run abandon on a change")))
 
 (defun jj-new (arg)
   "Create a new changeset.
@@ -1446,7 +1450,7 @@ With prefix ARG, open the transient menu for advanced options."
         (goto-char (line-beginning-position))
       (goto-char start-pos)
       (unless silent
-        (message "Commit %s not found" change-id))
+        (message "Change %s not found" change-id))
       nil)))
 
 (defun jj--get-git-remotes ()
@@ -1609,7 +1613,7 @@ Tries `jj git remote list' first, then falls back to `git remote'."
                                          (format "Description updated for %s" change-id)
                                          "Failed to update description")
               (jj-log-refresh))))
-    (jj--message-with-log "No commit ID available for description update")))
+    (jj--message-with-log "No change ID available for description update")))
 
 (defun jj-git-fetch (args)
   "Fetch from git remote with ARGS from transient."
