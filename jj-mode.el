@@ -1383,7 +1383,7 @@ With prefix ARG, open the transient menu for advanced options."
     ("-m" "Message" "--message=")
     ("-n" "No edit" "--no-edit")]
    ["Actions"
-    ("n" "Create new changeset" jj-new-after
+    ("n" "Create new changeset" jj-new-execute
      :transient nil)
     ("a" "Create after changeset" jj-new-after
      :transient nil)
