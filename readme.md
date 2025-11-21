@@ -69,6 +69,9 @@ buffer (`*jj-log:project-name*`).
 - `u` - Undo last operation
 - `s` - Squash
 - `N` - New changeset here
+  - `n` create new changeset with options
+  - `a` create new changeset after bookmark with options
+  - `b` create new changeset before bookmark with options
 
 #### Advanced Operations
 - `r` - Rebase transient menu
