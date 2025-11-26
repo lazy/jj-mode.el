@@ -76,6 +76,10 @@ The function must accept one argument: the buffer to display."
   '((t :inherit region :extend t))
   "Face for showing current working copy in the log graph"
   :group 'jj)
+(defface jj-trunk-heading
+  '((t :inherit diff-added :extend t))
+  "Face for showing current working copy in the log graph"
+  :group 'jj)
 
 (defvar jj-mode-map
   (let ((map (make-sparse-keymap)))
@@ -183,9 +187,12 @@ if(self.root(),
       ),
       format_short_commit_id(self.commit_id()),
       format_timestamp(commit_timestamp(self)),
-      '{\"long-desc\":' ++ self.description().escape_json() ++ ',\"current-working-copy\":' ++ json(self.current_working_copy())"
-   (when jj-log-show-diff-stat " ++ ',\"diff-stat\":' ++ stringify(self.diff().stat(120)).escape_json()")
-   " ++ '}',
+      '{' ++ separate(', ',
+        '\"long-desc\":' ++ self.description().escape_json(),
+        '\"current-working-copy\":' ++ json(self.current_working_copy()),
+        '\"trunk\":' ++ json(self.contained_in('trunk()')),"
+   (when jj-log-show-diff-stat "'\"diff-stat\":' ++ stringify(self.diff().stat(120)).escape_json(),")
+   "   ) ++ '}',
     ),
   )
 )
@@ -508,6 +515,7 @@ The results of this fn are fed into `jj--parse-log-entries'."
                              :long-desc (jj--optional-string-trim (plist-get metadata :long-desc))
                              :diff-stat (jj--optional-string-trim optional-diff-stat)
                              :current-working-copy (plist-get metadata :current-working-copy)
+                             :trunk (plist-get metadata :trunk)
                              :timestamp  timestamp
                              :bookmarks bookmarks)))
                    else collect
@@ -532,8 +540,11 @@ The results of this fn are fed into `jj--parse-log-entries'."
       (oset section commit-id (plist-get entry :commit-id))
       (magit-insert-heading
         (string-join (plist-get entry :elems) " "))
-      (when (eq (plist-get entry :current-working-copy) t)
+      (cond
+       ((eq (plist-get entry :current-working-copy) t)
         (font-lock-append-text-property section-start (point) 'font-lock-face 'jj-working-copy-heading))
+       ((eq (plist-get entry :trunk) t)
+        (font-lock-append-text-property section-start (point) 'font-lock-face 'jj-trunk-heading)))
       (magit-insert-section-body
         (let ((indent-column (+ 10 (length (plist-get entry :prefix))))
               (long-desc (plist-get entry :long-desc))
