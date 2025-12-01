@@ -115,7 +115,7 @@ The function must accept one argument: the buffer to display."
     (define-key map (kbd "c") 'jj-commit)
     (define-key map (kbd "e") 'jj-edit-changeset)
     (define-key map (kbd "u") 'jj-undo)
-    (define-key map (kbd "N") 'jj-new)
+    (define-key map (kbd "N") 'jj-new-transient)
     (define-key map (kbd "s") 'jj-squash-transient)
     (define-key map (kbd "c") 'jj-commit)
     (define-key map (kbd "d") 'jj-describe)
