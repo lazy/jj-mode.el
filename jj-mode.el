@@ -139,6 +139,8 @@ The function must accept one argument: the buffer to display."
 (transient-define-prefix jj-mode-transient ()
   "JJ commands transient menu."
   [:description "JJ Commands" :class transient-columns
+                ["Arguments"
+                 ("-c" "Use commit id" "--use-commit-id")]
                 ["Basic Operations"
                  ("g" "Refresh log" jj-log-refresh)
                  ("c" "Commit" jj-commit)
@@ -1344,7 +1346,7 @@ ARGS can be transient related infix, for example
   (interactive
    (let* ((existing (jj--get-bookmark-names))
           (name (completing-read "Set bookmark: " existing nil nil))
-          (at (or (jj-get-changeset-at-point (transient-args 'jj-bookmark-transient--internal)) "@"))
+          (at (or (jj-get-changeset-at-point) "@"))
           (rev (read-string (format "Target revision (default %s): " at) nil nil at)))
      (append (list name rev) (list (transient-args 'jj-bookmark-transient--internal)))))
   (let* ((default-directory (jj--root))
@@ -1394,7 +1396,6 @@ ARGS can be transient related infix, for example
   :transient-suffix 'transient--do-exit
   :transient-non-suffix t
   ["Arguments"
-   ("-c" "Use commit id" "--use-commit-id")
    ("-B" "Allow backwards" "--allow-backwards")]
   ["Bookmark Operations"
    [
@@ -1836,9 +1837,9 @@ Tries `jj git remote list' first, then falls back to `git remote'."
       (goto-char pos)
       (message "No more changesets"))))
 
-(defun jj-get-changeset-at-point (&optional args)
+(defun jj-get-changeset-at-point ()
   "Get the changeset ID at point."  
-  (let ((id-type (if (transient-arg-value "--use-commit-id" args) 'commit-id 'change-id)))   
+  (let ((id-type (if (transient-arg-value "--use-commit-id" (transient-args 'jj-mode-transient)) 'commit-id 'change-id)))   
     (when-let ((section (magit-current-section)))
       (cond
        ((and (slot-exists-p section id-type)
