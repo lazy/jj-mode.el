@@ -117,6 +117,7 @@ The function must accept one argument: the buffer to display."
     (define-key map (kbd "u") 'jj-undo)
     (define-key map (kbd "N") 'jj-new-transient)
     (define-key map (kbd "s") 'jj-squash-transient)
+    (define-key map (kbd "S") 'jj-squash-into-parent)
     (define-key map (kbd "c") 'jj-commit)
     (define-key map (kbd "d") 'jj-describe)
     (define-key map (kbd "a") 'jj-abandon)
@@ -147,7 +148,8 @@ The function must accept one argument: the buffer to display."
                  ("N" "New changeset" jj-new)
                  ("a" "Abandon changeset" jj-abandon)
                  ("d" "Describe changeset" jj-describe)
-                 ("s" "Squash changeset" jj-squash-transient)]
+                 ("s" "Squash changeset" jj-squash-transient)
+                 ("S" "Squash into parent" jj-squash-into-parent)]
                 ["Advanced Operations"
                  ("r" "Rebase changeset" jj-rebase-transient)
                  ("b" "Bookmark operations" jj-bookmark-transient)
@@ -1234,6 +1236,20 @@ This procedure produces valid graph rendering"
 (defun jj-mode-bury-squash ()
   (interactive)
   (transient-quit-one))
+
+(defun jj-squash-into-parent ()
+  "Squash changeset at point into parent"
+  (interactive)
+  ;; Add cleanup hook for when transient exits
+  (when-let ((change-id (jj-get-changeset-at-point)))
+    (let* ((args (list "squash" "--from" change-id "--into" (format "%s-" change-id)))
+           (result (apply #'jj--run-command args)))
+      (if (jj--handle-command-result args result
+                                     (format "Squashed %s" change-id)
+                                     "Failed to squash commit")
+          (progn
+            (jj-log-refresh)
+            (back-to-indentation))))))
 
 (defun jj-bookmark-create ()
   "Create a new bookmark."
