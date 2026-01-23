@@ -1552,6 +1552,7 @@ With prefix ARG, open the transient menu for advanced options."
          (after-args (seq-filter (lambda (arg) (string-prefix-p "--insert-after=" arg)) args))
          (before-args (seq-filter (lambda (arg) (string-prefix-p "--insert-before=" arg)) args))
          (message-arg (seq-find (lambda (arg) (string-prefix-p "--message=" arg)) args))
+         (bookmark-arg (transient-arg-value "--bookmark=" args))
 
          ;; Build command arguments
          (cmd-args (append '("new")
@@ -1573,7 +1574,8 @@ With prefix ARG, open the transient menu for advanced options."
 
          ;; Default to current changeset if no parents/after/before specified
          (final-cmd-args (if (and (null parent-args) (null after-args) (null before-args))
-                             (let ((change-id (jj-get-changeset-at-point)))
+                             (let ((change-id (or bookmark-arg
+                                                  (jj-get-changeset-at-point))))
                                (if change-id
                                    (append cmd-args (list change-id))
                                  cmd-args))
